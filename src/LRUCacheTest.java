@@ -316,7 +316,7 @@ public class LRUCacheTest {
         section("Concurrent correctness");
         test("concurrent puts - no exceptions",              LRUCacheTest::testConcurrentPutsNoExceptions);
         test("concurrent put/get - no corrupted values",     LRUCacheTest::testConcurrentPutGetConsistency);
-
+        test("capacity never exceeded under concurrent load", LRUCacheTest::testCapacityNeverExceededUnderConcurrentLoad);
 
         section("Throughput benchmark");
         benchmarkThroughput();
