@@ -20,17 +20,15 @@ public class LRUCache {
             if (val == null) {
                 return -1;
             }
-            this.put(key, val, false);
+            this.put(key, val);
             return val;
         } finally {
             lock.unlock();
         }
     }
 
-    private void put(int key, int value, boolean shouldUnlock) {
-        if (shouldUnlock) {
-            lock.lock();
-        }
+    public void put(int key, int value) {
+        lock.lock();
         try {
             this.map.remove(key);
             this.map.put(key, value);
@@ -39,13 +37,9 @@ public class LRUCache {
                 this.map.remove(oldestEntry);
             }
         } finally {
-            if (shouldUnlock) {
-                lock.unlock();
-            }
+            lock.unlock();
         }
     }
 
-    public void put(int key, int value) {
-        this.put(key, value, true);
-    }
+
 }

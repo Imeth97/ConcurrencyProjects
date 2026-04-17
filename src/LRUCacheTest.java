@@ -1,6 +1,7 @@
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Test harness for LRUCache.
@@ -39,6 +40,29 @@ public class LRUCacheTest {
 
     private static void assertTrue(boolean condition, String msg) {
         if (!condition) throw new AssertionError(msg);
+    }
+
+    private static void waitUntil(Callable<Boolean> condition, long timeoutMs, String msg) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        while (System.nanoTime() < deadline) {
+            if (condition.call()) return;
+            Thread.sleep(1);
+        }
+        throw new AssertionError(msg);
+    }
+
+    private static ReentrantLock getInternalLock(LRUCache cache) throws Exception {
+        java.lang.reflect.Field f = LRUCache.class.getDeclaredField("lock");
+        f.setAccessible(true);
+        return (ReentrantLock) f.get(cache);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Integer> snapshotKeyOrder(LRUCache cache) throws Exception {
+        java.lang.reflect.Field f = LRUCache.class.getDeclaredField("map");
+        f.setAccessible(true);
+        LinkedHashMap<Integer, Integer> m = (LinkedHashMap<Integer, Integer>) f.get(cache);
+        return new ArrayList<>(m.keySet());
     }
 
     private static void section(String name) {
@@ -259,6 +283,62 @@ public class LRUCacheTest {
     }
 
     /**
+     * Stages a get and a put behind the cache's internal lock so they are forced
+     * to race for the same critical section. The final state must match one of
+     * the two valid serial orders:
+     *
+     *   1. get(1) then put(3, 3)  => keys [1, 3], getter returns 1
+     *   2. put(3, 3) then get(1)  => keys [2, 3], getter returns -1
+     */
+    static void testConcurrentGetPutLinearizesToValidOrder() throws Exception {
+        LRUCache cache = new LRUCache(2);
+        cache.put(1, 1);
+        cache.put(2, 2);
+
+        ReentrantLock internalLock = getInternalLock(cache);
+        AtomicInteger getResult = new AtomicInteger(Integer.MIN_VALUE);
+
+        Thread getter = new Thread(() -> getResult.set(cache.get(1)), "getter");
+        Thread putter = new Thread(() -> cache.put(3, 3), "putter");
+
+        internalLock.lock();
+        try {
+            getter.start();
+            waitUntil(
+                () -> internalLock.hasQueuedThread(getter),
+                1000,
+                "getter never blocked on the cache lock"
+            );
+
+            putter.start();
+            waitUntil(
+                () -> internalLock.hasQueuedThread(putter),
+                1000,
+                "putter never blocked on the cache lock"
+            );
+        } finally {
+            internalLock.unlock();
+        }
+
+        getter.join(2000);
+        putter.join(2000);
+
+        assertTrue(!getter.isAlive(), "getter thread did not finish");
+        assertTrue(!putter.isAlive(), "putter thread did not finish");
+
+        List<Integer> keys = snapshotKeyOrder(cache);
+        int observed = getResult.get();
+
+        boolean getThenPut = observed == 1 && keys.equals(Arrays.asList(1, 3));
+        boolean putThenGet = observed == -1 && keys.equals(Arrays.asList(2, 3));
+
+        assertTrue(
+            getThenPut || putThenGet,
+            "final state must match a valid serial order, saw get=" + observed + " keys=" + keys
+        );
+    }
+
+    /**
      * Throughput benchmark - measures combined put/get ops/sec under load.
      * Not a pass/fail test; prints a number you can track across implementations.
      */
@@ -317,6 +397,7 @@ public class LRUCacheTest {
         test("concurrent puts - no exceptions",              LRUCacheTest::testConcurrentPutsNoExceptions);
         test("concurrent put/get - no corrupted values",     LRUCacheTest::testConcurrentPutGetConsistency);
         test("capacity never exceeded under concurrent load", LRUCacheTest::testCapacityNeverExceededUnderConcurrentLoad);
+        test("concurrent get/put linearizes to a valid order", LRUCacheTest::testConcurrentGetPutLinearizesToValidOrder);
 
         section("Throughput benchmark");
         benchmarkThroughput();
